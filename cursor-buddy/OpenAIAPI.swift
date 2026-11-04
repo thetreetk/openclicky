@@ -15,7 +15,7 @@ class OpenAIAPI {
 
     init(apiKey: String?, model: String = "gpt-5.6-sol", maxOutputTokens: Int = 128_000) {
         self.apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.apiURL = URL(string: "https://api.openai.com/v1/responses")!
+        self.apiURL = URL(string: AppBundleConfiguration.openAIBaseURL() + "/responses")!
         self.model = model
         self.maxOutputTokens = maxOutputTokens
 
@@ -29,6 +29,9 @@ class OpenAIAPI {
 
         warmUpTLSConnection()
     }
+
+    /// The model name actually sent: a configured override (local servers) or the catalog id.
+    private var effectiveModel: String { AppBundleConfiguration.openAIModelOverride() ?? model }
 
     func setAPIKey(_ apiKey: String?) {
         self.apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -98,8 +101,8 @@ class OpenAIAPI {
         ])
 
         let body: [String: Any] = [
-            "model": model,
-            "instructions": systemPrompt,
+            "model": effectiveModel,
+            "instructions": AppBundleConfiguration.adaptPromptForLocalModel(systemPrompt),
             "max_output_tokens": maxOutputTokens,
             "input": input + [[
                 "role": "user",
@@ -184,7 +187,7 @@ class OpenAIAPI {
             direction: "outgoing",
             event: "openai.streaming.request",
             fields: [
-                "model": model,
+                "model": effectiveModel,
                 "url": apiURL.absoluteString,
                 "payloadBytes": bodyData.count,
                 "transport": "sse",
@@ -214,7 +217,7 @@ class OpenAIAPI {
             direction: "incoming",
             event: "openai.streaming.connected",
             fields: [
-                "model": model,
+                "model": effectiveModel,
                 "statusCode": httpResponse.statusCode,
                 "contentType": contentType,
                 "payloadBytes": bodyData.count,
@@ -261,7 +264,7 @@ class OpenAIAPI {
                         direction: "incoming",
                         event: "openai.streaming.first_text_delta",
                         fields: [
-                            "model": model,
+                            "model": effectiveModel,
                             "transport": "sse",
                             "streamingMethod": "URLSession.bytes",
                             "firstTokenLatencyMs": Self.elapsedMilliseconds(from: startTime, to: firstTextDeltaAt!),
@@ -306,7 +309,7 @@ class OpenAIAPI {
             direction: "incoming",
             event: "openai.streaming.response",
             fields: [
-                "model": model,
+                "model": effectiveModel,
                 "duration": duration,
                 "durationMs": Self.elapsedMilliseconds(from: startTime, to: Date()),
                 "textDeltaCount": textDeltaCount,
@@ -383,8 +386,8 @@ class OpenAIAPI {
         ])
 
         return [
-            "model": model,
-            "instructions": systemPrompt,
+            "model": effectiveModel,
+            "instructions": AppBundleConfiguration.adaptPromptForLocalModel(systemPrompt),
             "max_output_tokens": maxOutputTokens,
             "stream": stream,
             "input": input + [[

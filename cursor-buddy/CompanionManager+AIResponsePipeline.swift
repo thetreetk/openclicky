@@ -544,9 +544,27 @@ extension CompanionManager {
                     let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
                     let displayFrame = targetScreenCapture.displayFrame
 
+                    // A local OpenAI-compatible brain (e.g. Hermes running a Qwen-VL model) answers
+                    // in a normalized 0-1000 grid, not screenshot pixels. Convert before clamping.
+                    var pixelPoint = normalizedGridPointIfNeeded(
+                        pointCoordinate,
+                        screenshotWidth: screenshotWidth,
+                        screenshotHeight: screenshotHeight
+                    )
+                    // Second, zoomed look: a local vision model is much more precise on a crop
+                    // around its first guess than on the whole screen (about 11px -> 3px miss).
+                    if localBrainUsesNormalizedGrid,
+                       let refinedPoint = await LocalPointRefiner.refine(
+                           point: pixelPoint,
+                           label: parseResult.elementLabel,
+                           capture: targetScreenCapture
+                       ) {
+                        pixelPoint = refinedPoint
+                    }
+
                     // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
+                    let clampedX = max(0, min(pixelPoint.x, screenshotWidth))
+                    let clampedY = max(0, min(pixelPoint.y, screenshotHeight))
 
                     // Scale from screenshot pixels to display points
                     let displayLocalX = clampedX * (displayWidth / screenshotWidth)
@@ -1002,7 +1020,16 @@ extension CompanionManager {
         switch overlay.kind {
         case .scribble:
             return OpenClickyVisualGuidanceOverlay.scribble(
-                points: overlay.points.map { globalPoint(fromScreenshotPoint: $0.cgPoint, in: capture) },
+                points: overlay.points.map {
+                    globalPoint(
+                        fromScreenshotPoint: normalizedGridPointIfNeeded(
+                            $0.cgPoint,
+                            screenshotWidth: CGFloat(capture.screenshotWidthInPixels),
+                            screenshotHeight: CGFloat(capture.screenshotHeightInPixels)
+                        ),
+                        in: capture
+                    )
+                },
                 accentHex: overlay.style.accentHex,
                 lineWidth: overlay.style.lineWidth,
                 caption: overlay.style.caption,
@@ -1013,9 +1040,34 @@ extension CompanionManager {
                 return overlay
             }
             let isCalibrationAnchor = Self.isVisualGuidanceCalibrationCaption(overlay.style.caption)
+            // A local vision model (Qwen-VL) answers boxes as corners [x1,y1,x2,y2] on a 0-1000
+            // grid. The parser stored the four numbers as (x, y, width, height), so reinterpret.
+            var screenshotRect = rect.cgRect
+            if localBrainUsesNormalizedGrid {
+                let width = CGFloat(capture.screenshotWidthInPixels)
+                let height = CGFloat(capture.screenshotHeightInPixels)
+                let first = normalizedGridPointIfNeeded(
+                    CGPoint(x: rect.cgRect.minX, y: rect.cgRect.minY),
+                    screenshotWidth: width,
+                    screenshotHeight: height
+                )
+                let second = normalizedGridPointIfNeeded(
+                    CGPoint(x: rect.cgRect.width, y: rect.cgRect.height),
+                    screenshotWidth: width,
+                    screenshotHeight: height
+                )
+                screenshotRect = CGRect(
+                    x: min(first.x, second.x),
+                    y: min(first.y, second.y),
+                    width: abs(second.x - first.x),
+                    height: abs(second.y - first.y)
+                )
+                // Pad the box a little: a slightly larger box is more forgiving of the model's aim.
+                screenshotRect = screenshotRect.insetBy(dx: -10, dy: -8)
+            }
             return OpenClickyVisualGuidanceOverlay.rectangle(
                 rect: globalRect(
-                    fromScreenshotRect: rect.cgRect,
+                    fromScreenshotRect: screenshotRect,
                     in: capture,
                     applyingCalibration: !isCalibrationAnchor
                 ),
@@ -1905,5 +1957,111 @@ extension CompanionManager {
             fields["ttsFailureKind"] = "playback_failure"
         }
         return fields
+    }
+}
+
+
+extension CompanionManager {
+    /// When the voice answer comes from a custom OpenAI-compatible base URL (a local model),
+    /// its [POINT:x,y] values use a 0-1000 normalized grid. Otherwise they are screenshot pixels.
+    /// True when the voice answer comes from a local OpenAI-compatible model whose
+    /// coordinates use a normalized 0-1000 grid instead of screenshot pixels.
+    var localBrainUsesNormalizedGrid: Bool {
+        AppBundleConfiguration.openAIBaseURL() != AppBundleConfiguration.defaultOpenAIBaseURL
+            && OpenClickyModelCatalog.voiceAnalysisModel(withID: selectedModel).provider == .openAI
+    }
+
+    func normalizedGridPointIfNeeded(
+        _ point: CGPoint,
+        screenshotWidth: CGFloat,
+        screenshotHeight: CGFloat
+    ) -> CGPoint {
+        guard AppBundleConfiguration.openAIBaseURL() != AppBundleConfiguration.defaultOpenAIBaseURL,
+              OpenClickyModelCatalog.voiceAnalysisModel(withID: selectedModel).provider == .openAI else {
+            return point
+        }
+        return CGPoint(x: point.x / 1000 * screenshotWidth, y: point.y / 1000 * screenshotHeight)
+    }
+}
+
+/// Re-locates a pointed-at element inside a zoomed crop around the model's first answer.
+/// Works only with a local OpenAI-compatible vision model (0-1000 grid answers); any failure
+/// returns nil and the original point is used.
+enum LocalPointRefiner {
+    private static let instructions = "Reply with only [POINT:x,y] where x,y are integers on a 0-1000 grid (0,0 top-left, 1000,1000 bottom-right of the image) at the exact center of the requested element."
+
+    static func refine(point: CGPoint, label: String?, capture: CompanionScreenCapture) async -> CGPoint? {
+        guard let label = label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty,
+              label.lowercased() != "none",
+              let source = NSImage(data: capture.imageData)?.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              capture.screenshotWidthInPixels > 0, capture.screenshotHeightInPixels > 0 else { return nil }
+
+        let imageWidth = CGFloat(source.width)
+        let imageHeight = CGFloat(source.height)
+        let scaleX = imageWidth / CGFloat(capture.screenshotWidthInPixels)
+        let scaleY = imageHeight / CGFloat(capture.screenshotHeightInPixels)
+        let cropWidth = min(imageWidth, (480 * scaleX).rounded())
+        let cropHeight = min(imageHeight, (270 * scaleY).rounded())
+        let originX = min(max((point.x * scaleX - cropWidth / 2).rounded(), 0), imageWidth - cropWidth)
+        let originY = min(max((point.y * scaleY - cropHeight / 2).rounded(), 0), imageHeight - cropHeight)
+        let cropRect = CGRect(x: originX, y: originY, width: cropWidth, height: cropHeight)
+        guard let cropped = source.cropping(to: cropRect) else { return nil }
+
+        let outputWidth = Int(cropRect.width * 2)
+        let outputHeight = Int(cropRect.height * 2)
+        guard let context = CGContext(
+            data: nil, width: outputWidth, height: outputHeight, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: outputWidth, height: outputHeight))
+        guard let scaled = context.makeImage(),
+              let png = NSBitmapImageRep(cgImage: scaled).representation(using: .png, properties: [:]),
+              let url = URL(string: AppBundleConfiguration.openAIBaseURL() + "/responses") else { return nil }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(AppBundleConfiguration.openAIAPIKey() ?? "ollama")", forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = [
+            "model": AppBundleConfiguration.openAIModelOverride() ?? "qwen3-vl:30b-a3b-instruct",
+            "stream": false,
+            "instructions": instructions,
+            "input": [[
+                "role": "user",
+                "content": [
+                    ["type": "input_text", "text": "This is a zoomed crop of the screen. Point at the center of the \(label)."],
+                    ["type": "input_image", "image_url": "data:image/png;base64," + png.base64EncodedString()]
+                ]
+            ]]
+        ]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+        request.httpBody = bodyData
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let output = json["output"] as? [[String: Any]] else { return nil }
+
+        var text = ""
+        for item in output {
+            for part in (item["content"] as? [[String: Any]]) ?? [] {
+                if let piece = part["text"] as? String { text += piece }
+            }
+        }
+        guard let regex = try? NSRegularExpression(pattern: #"(?:POINT:)?\[?\s*(\d+)\s*,\s*(\d+)"#),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let xRange = Range(match.range(at: 1), in: text), let yRange = Range(match.range(at: 2), in: text),
+              let gridX = Double(text[xRange]), let gridY = Double(text[yRange]),
+              gridX <= 1000, gridY <= 1000 else { return nil }
+
+        let refinedX = (cropRect.minX + CGFloat(gridX) / 1000 * cropRect.width) / scaleX
+        let refinedY = (cropRect.minY + CGFloat(gridY) / 1000 * cropRect.height) / scaleY
+        // The zoomed look is only a fine correction. A big jump means it locked onto a different
+        // element (e.g. a neighbouring row of text), so keep the first guess instead.
+        guard abs(refinedX - point.x) <= 32, abs(refinedY - point.y) <= 32 else { return nil }
+        print("🎯 Point refined: (\(Int(point.x)), \(Int(point.y))) → (\(Int(refinedX)), \(Int(refinedY)))")
+        return CGPoint(x: refinedX, y: refinedY)
     }
 }

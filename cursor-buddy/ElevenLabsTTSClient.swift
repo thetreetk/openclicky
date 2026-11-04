@@ -610,6 +610,17 @@ final class StreamingTTSSession {
 
         if let playerNode {
             maybeStartBufferedPlaybackIfReady(force: true)
+            // Local TTS: queue a little silence after the last sentence so playback is not
+            // stopped before the final words have rendered. Sentences stay back to back.
+            if AppBundleConfiguration.localTTSBaseURL() != nil, let format {
+                let trailingSilence = [Int16](repeating: 0, count: Int(sampleRate * 1.5))
+                scheduledFrameCount += TTSStreamingPlaybackEngine.scheduleSamples(
+                    trailingSilence,
+                    on: playerNode,
+                    format: format,
+                    startPlaybackIfNeeded: false
+                )
+            }
             await ElevenLabsTTSClient.waitForPlaybackToDrain(
                 playerNode,
                 scheduledFrameCount: scheduledFrameCount,

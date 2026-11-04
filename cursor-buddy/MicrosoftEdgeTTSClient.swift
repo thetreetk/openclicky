@@ -172,6 +172,16 @@ final class MicrosoftEdgeTTSClient: OpenClickyTTSClient {
     }
 
     func fetchSentenceSamples(_ text: String) async throws -> [Int16] {
+        // A configured local speech server (OPENCLICKY_LOCAL_TTS_URL) takes the place of
+        // Microsoft's online service. Raw 24 kHz mono PCM matches `streamSampleRate`.
+        if let localBaseURL = AppBundleConfiguration.localTTSBaseURL() {
+            return try await Self.fetchLocalPCMSamples(
+                text: Self.cleanedText(text),
+                baseURL: localBaseURL,
+                voice: AppBundleConfiguration.localTTSVoice(),
+                session: session
+            )
+        }
         let selectedVoice = voiceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Self.defaultVoiceID : voiceID
         let mp3Data = try await Self.fetchMP3Data(
             text: text,
@@ -179,6 +189,39 @@ final class MicrosoftEdgeTTSClient: OpenClickyTTSClient {
             session: session
         )
         return try Self.decodeMP3DataToSamples(mp3Data)
+    }
+
+    nonisolated private static func fetchLocalPCMSamples(
+        text: String,
+        baseURL: String,
+        voice: String,
+        session: URLSession
+    ) async throws -> [Int16] {
+        guard let url = URL(string: baseURL + "/audio/speech") else {
+            throw makeError(-20, "Invalid local TTS URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": "kokoro",
+            "input": text,
+            "voice": voice,
+            "response_format": "pcm"
+        ])
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw makeError(-21, "Local TTS server returned an error")
+        }
+        let sampleCount = data.count / 2
+        guard sampleCount > 0 else { throw makeError(-22, "Local TTS server returned no audio") }
+        var samples = [Int16](repeating: 0, count: sampleCount)
+        data.withUnsafeBytes { raw in
+            for index in 0..<sampleCount {
+                samples[index] = Int16(littleEndian: raw.loadUnaligned(fromByteOffset: index * 2, as: Int16.self))
+            }
+        }
+        return samples
     }
 
     private static func makeStreamFormat() -> AVAudioFormat? {

@@ -1063,7 +1063,13 @@ struct BlueCursorView: View {
 
             if let caption = overlay.style.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
                !caption.isEmpty {
-                externalCaption(caption, at: captionAnchor(for: overlay), color: color)
+                externalCaption(
+                    caption,
+                    at: captionAnchor(for: overlay),
+                    color: color,
+                    showsProviderBadge: false,
+                    verticalOffset: 36
+                )
             }
         }
         .transition(accessibilityReduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.98)))
@@ -1103,7 +1109,9 @@ struct BlueCursorView: View {
     private func captionAnchor(for overlay: OpenClickyVisualGuidanceOverlay) -> CGPoint {
         let bounds = overlay.screenBounds
         guard !bounds.isNull else { return cursorPosition }
-        return convertScreenPointToSwiftUICoordinates(CGPoint(x: bounds.midX, y: bounds.maxY))
+        // AppKit y grows upward, so minY is the BOTTOM edge on screen: anchor the caption there so
+        // it hangs below the highlight instead of sitting inside it.
+        return convertScreenPointToSwiftUICoordinates(CGPoint(x: bounds.midX, y: bounds.minY))
     }
 
     private func convertScreenRectToSwiftUICoordinates(_ rect: CGRect) -> CGRect {
@@ -1133,13 +1141,19 @@ struct BlueCursorView: View {
     }
 
     @ViewBuilder
-    private func externalCaption(_ caption: String, at position: CGPoint, color: Color) -> some View {
-        let providerBadge = companionManager.selectedVoiceBackendFamily?.displayName
+    private func externalCaption(
+        _ caption: String,
+        at position: CGPoint,
+        color: Color,
+        showsProviderBadge: Bool = true,
+        verticalOffset: CGFloat = 20
+    ) -> some View {
+        let providerBadge = showsProviderBadge ? companionManager.selectedVoiceBackendFamily?.displayName : nil
         let bubblePosition = anchoredBubblePosition(
             for: position,
             bubbleSize: estimatedExternalCaptionBubbleSize(for: caption, providerBadge: providerBadge),
             horizontalOffset: 12,
-            verticalOffset: 20
+            verticalOffset: verticalOffset
         )
 
         VStack(alignment: .leading, spacing: 3) {
@@ -1381,11 +1395,11 @@ struct BlueCursorView: View {
         // Convert the AppKit screen location to SwiftUI coordinates for this screen
         let targetInSwiftUI = convertScreenPointToSwiftUICoordinates(screenLocation)
 
-        // Offset the target so the buddy sits beside the element rather than
-        // directly on top of it — 8px to the right, 12px below.
+        // Land exactly on the target (no beside-the-element offset), so the
+        // pointer sits on the element it is showing. Was 8px right, 12px below.
         let offsetTarget = CGPoint(
-            x: targetInSwiftUI.x + 8,
-            y: targetInSwiftUI.y + 12
+            x: targetInSwiftUI.x,
+            y: targetInSwiftUI.y
         )
 
         // Clamp target to screen bounds with padding

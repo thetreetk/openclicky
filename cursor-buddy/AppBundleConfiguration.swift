@@ -68,7 +68,7 @@ nonisolated enum AppBundleConfiguration {
     /// When true (default), sample only while the primary mouse button is dragged during PTT hold.
     /// When false, any mouse movement while holding the key draws.
     static let userCircleWhileTalkingRequireClickDefaultsKey = "openClickyCircleWhileTalkingRequireClick"
-    static let appGroupIdentifier = "group.com.jkneen.openclicky"
+    static let appGroupIdentifier = "group.com.xat.openclicky"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -145,6 +145,87 @@ nonisolated enum AppBundleConfiguration {
 
     static var usesCustomAnthropicBaseURL: Bool {
         anthropicBaseURL() != defaultAnthropicBaseURL
+    }
+
+    /// Optional local OpenAI-compatible speech server (e.g. Kokoro at http://127.0.0.1:8880/v1).
+    /// When set, the voice slot synthesises there instead of calling a cloud TTS service.
+    static func localTTSBaseURL() -> String? {
+        let configured = stringValue(
+            forKey: "LocalTTSBaseURL",
+            environmentKeys: ["OPENCLICKY_LOCAL_TTS_URL"]
+        ) ?? localDevelopmentEnvironmentValue(forKey: "OPENCLICKY_LOCAL_TTS_URL")
+        guard var trimmed = configured, !trimmed.isEmpty else { return nil }
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty else { return nil }
+        return trimmed
+    }
+
+    static func localTTSVoice() -> String {
+        stringValue(forKey: "LocalTTSVoice", environmentKeys: ["OPENCLICKY_LOCAL_TTS_VOICE"])
+            ?? localDevelopmentEnvironmentValue(forKey: "OPENCLICKY_LOCAL_TTS_VOICE")
+            ?? "af_heart"
+    }
+
+    /// Optional model name sent instead of OpenClicky's catalog id, for local servers that
+    /// need their own name (e.g. OPENCLICKY_OPENAI_MODEL=qwen3-vl:30b-a3b-instruct for Ollama).
+    static func openAIModelOverride() -> String? {
+        let configured = stringValue(
+            forKey: "OpenAIModelOverride",
+            environmentKeys: ["OPENCLICKY_OPENAI_MODEL"]
+        ) ?? localDevelopmentEnvironmentValue(forKey: "OPENCLICKY_OPENAI_MODEL")
+        guard let trimmed = configured?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    /// With a custom OpenAI-compatible base URL (a local vision model), ask for boxes as corners
+    /// on a 0-1000 grid, which is how Qwen-VL models naturally answer. Matches the conversion in
+    /// CompanionManager+AIResponsePipeline. Cloud models keep the original wording.
+    static func adaptPromptForLocalModel(_ prompt: String) -> String {
+        guard openAIBaseURL() != defaultOpenAIBaseURL else { return prompt }
+        var adapted = prompt
+            .replacingOccurrences(
+                of: "[RECT:x,y,width,height:label]",
+                with: "[RECT:x1,y1,x2,y2:label] where (x1,y1) is the top-left corner and (x2,y2) the bottom-right corner"
+            )
+            .replacingOccurrences(of: "[RECT:760,115,420,190:error block]", with: "[RECT:760,115,1180,305:error block]")
+            .replacingOccurrences(of: "[RECT:120,80,300,140:error panel:screen2]", with: "[RECT:120,80,420,220:error panel:screen2]")
+        adapted += "\n\nIMPORTANT: every coordinate in POINT, RECT and SCRIBBLE tags uses a 0-1000 grid: 0,0 is the top-left of the screenshot and 1000,1000 is the bottom-right, whatever its pixel size.\n"
+        return adapted
+    }
+
+    static let defaultOpenAIBaseURL = "https://api.openai.com/v1"
+
+    /// Base URL for OpenAI-compatible Responses API requests. Lets OpenClicky talk to a
+    /// local OpenAI-compatible server (e.g. a Hermes agent at http://127.0.0.1:8642/v1)
+    /// instead of api.openai.com. Falls back to the default for anything that is not a
+    /// well-formed absolute http(s) URL, because callers build URLs with `URL(string:)!`.
+    static func openAIBaseURL() -> String {
+        let configured = stringValue(
+            forKey: "OpenAIBaseURL",
+            environmentKeys: ["OPENAI_BASE_URL"]
+        ) ?? localDevelopmentEnvironmentValue(forKey: "OPENAI_BASE_URL")
+
+        guard let configured, !configured.isEmpty else { return defaultOpenAIBaseURL }
+
+        var trimmed = configured
+        while trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
+
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host,
+              !host.isEmpty,
+              components.query == nil,
+              components.fragment == nil else {
+            return defaultOpenAIBaseURL
+        }
+
+        return trimmed
     }
 
     static func openAIAPIKey() -> String? {
