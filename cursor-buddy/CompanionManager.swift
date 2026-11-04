@@ -128,6 +128,7 @@ private struct OpenClickyNativeClickRequest {
     let targetDescription: String
     let targetPhrase: String?
     let prefersLastPointedElement: Bool
+    var clickCount: Int = 1   // XAT: 2 for "double click X" / "open the file called X"
 }
 
 private struct OpenClickyFolderOpenRequest {
@@ -7782,6 +7783,27 @@ final class CompanionManager: ObservableObject {
                     )
                 }
 
+                // XAT: read the screen's text first. A unique text match (file name, button label, link) is exact and
+                // fast; the vision model is only used when the text is absent or ambiguous.
+                if let phrase = request.targetPhrase,
+                   let textMatch = OCRClickTargetLocator.locate(phrase: phrase, capture: targetScreenCapture) {
+                    OpenClickyMessageLogStore.shared.append(
+                        lane: "computer-use",
+                        direction: "incoming",
+                        event: "native_cua.ocr_target",
+                        fields: ["executor": "native_cua", "targetPhrase": phrase, "matchedText": textMatch.text]
+                    )
+                    performNativeClick(
+                        at: globalPoint(fromScreenshotPoint: textMatch.point, in: targetScreenCapture),
+                        displayFrame: targetScreenCapture.displayFrame,
+                        label: textMatch.text,
+                        request: request,
+                        executionStartedAt: executionStartedAt,
+                        timing: timing
+                    )
+                    return
+                }
+
                 let dimensionInfo = " (image dimensions: \(targetScreenCapture.screenshotWidthInPixels)x\(targetScreenCapture.screenshotHeightInPixels) pixels)"
                 let response = try await analyzeComputerUsePointingResponse(
                     image: (data: targetScreenCapture.imageData, label: targetScreenCapture.label + dimensionInfo),
@@ -7809,7 +7831,32 @@ final class CompanionManager: ObservableObject {
                     return
                 }
 
-                let globalLocation = globalPoint(fromScreenshotPoint: pointCoordinate, in: targetScreenCapture)
+                // XAT: a local vision model answers on a 0-1000 grid; convert like the voice pointer does, then refine on a zoomed crop.
+                var clickPixelPoint = normalizedGridPointIfNeeded(
+                    pointCoordinate,
+                    screenshotWidth: CGFloat(targetScreenCapture.screenshotWidthInPixels),
+                    screenshotHeight: CGFloat(targetScreenCapture.screenshotHeightInPixels)
+                )
+                if localBrainUsesNormalizedGrid,
+                   let refinedClickPoint = await LocalPointRefiner.refine(
+                       point: clickPixelPoint,
+                       label: parseResult.elementLabel,
+                       capture: targetScreenCapture
+                   ) {
+                    clickPixelPoint = refinedClickPoint
+                }
+                // XAT: a second, tighter look for small targets such as Finder list rows (15/21 -> 19/21 -> 21/21 offline).
+                if localBrainUsesNormalizedGrid,
+                   let tighterClickPoint = await LocalPointRefiner.refine(
+                       point: clickPixelPoint,
+                       label: parseResult.elementLabel,
+                       capture: targetScreenCapture,
+                       cropWidth: 240,
+                       cropHeight: 135
+                   ) {
+                    clickPixelPoint = tighterClickPoint
+                }
+                let globalLocation = globalPoint(fromScreenshotPoint: clickPixelPoint, in: targetScreenCapture)
                 performNativeClick(
                     at: globalLocation,
                     displayFrame: targetScreenCapture.displayFrame,
@@ -7858,7 +7905,7 @@ final class CompanionManager: ObservableObject {
         timing: OpenClickyRequestTiming?
     ) {
         do {
-            try nativeComputerUseController.click(at: point)
+            try nativeComputerUseController.click(at: point, count: request.clickCount)
             detectedElementScreenLocation = point
             detectedElementDisplayFrame = displayFrame
             detectedElementBubbleText = Self.pointingBubbleText(for: label)
@@ -12656,6 +12703,7 @@ final class CompanionManager: ObservableObject {
         finalTranscript: String
     ) -> String? {
         guard !isInstantVoiceScreenContextRequest(finalTranscript) else { return nil }  // XAT: pointing requests stay on the voice path
+        guard nativeClickRequest(from: finalTranscript) == nil else { return nil }  // XAT: direct click requests are never agent tasks
         guard isAgentRoutingCandidate(partialTranscript) else { return nil }
 
         let normalizedFinal = SpokenText.normalizedSpokenCommandText(finalTranscript)
@@ -13050,6 +13098,35 @@ final class CompanionManager: ObservableObject {
             "the link",
             "the tile"
         ]
+
+        // XAT: double click, "find X and double click it", and "open the file called X" become screen clicks (click count 2).
+        let doubleClickPatterns: [(String, Int, Bool)] = [
+            (#"(?i)^\s*(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?double[\s-]*(?:click|tap)\s+(?:on\s+)?(.+?)[\.\!\?]*\s*$"#, 2, false),
+            (#"(?i)^\s*(?:please\s+)?(?:find|locate)\s+(.+?)\s+and\s+(double[\s-]*click|click|open|select)(?:\s+(?:on\s+)?(?:it|that|this))?[\.\!\?]*\s*$"#, 0, true),
+            (#"(?i)^\s*(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?open\s+(?:the\s+)?((?:file|document|folder)\s+(?:called|named)\s+.+?|.+?\s+(?:file|document))[\.\!\?]*\s*$"#, 2, false)
+        ]
+        for (pattern, fixedCount, verbInSecondGroup) in doubleClickPatterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(candidate.startIndex..<candidate.endIndex, in: candidate)
+            guard let match = regex.firstMatch(in: candidate, range: range),
+                  let targetRange = Range(match.range(at: 1), in: candidate) else { continue }
+            var target = String(candidate[targetRange]).trimmingCharacters(in: CharacterSet(charactersIn: " \n\t.,:;!?"))
+            for prefix in ["the file called ", "the file named ", "file called ", "file named ", "the document called ", "document called ", "the folder called ", "folder called "] {
+                if target.lowercased().hasPrefix(prefix) { target = String(target.dropFirst(prefix.count)); break }
+            }
+            guard !target.isEmpty else { continue }
+            var count = fixedCount
+            if verbInSecondGroup, let verbRange = Range(match.range(at: 2), in: candidate) {
+                let verb = candidate[verbRange].lowercased()
+                count = (verb.contains("double") || verb == "open") ? 2 : 1
+            }
+            return OpenClickyNativeClickRequest(
+                targetDescription: candidate,
+                targetPhrase: target,
+                prefersLastPointedElement: false,
+                clickCount: count
+            )
+        }
 
         let patterns = [
             #"(?i)^\s*(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:click|tap|select|choose)\s+(?:on\s+)?(.+?)[\.\!\?]*\s*$"#,

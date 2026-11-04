@@ -1604,10 +1604,14 @@ extension CompanionManager {
         onTextChunk: @MainActor @Sendable @escaping (String) -> Void
     ) async throws -> String {
         let selectedPointingModel = OpenClickyModelCatalog.computerUseModel(withID: selectedComputerUseModel)
-        let resolver = Self.computerUsePointingResolver(
-            selectedVoiceModelID: selectedModel,
-            selectedComputerUseModelID: selectedComputerUseModel
-        )
+        // XAT: with a local OpenAI-compatible brain, click targets go through the same local Responses path as voice pointing
+        // (the Codex point detector and the cloud resolvers cannot reach it).
+        let resolver: OpenClickyComputerUsePointingResolver = localBrainUsesNormalizedGrid
+            ? .openAIResponses
+            : Self.computerUsePointingResolver(
+                selectedVoiceModelID: selectedModel,
+                selectedComputerUseModelID: selectedComputerUseModel
+            )
 
         switch resolver {
         case .openAIRealtime:
@@ -1990,7 +1994,7 @@ extension CompanionManager {
 enum LocalPointRefiner {
     private static let instructions = "Reply with only [POINT:x,y] where x,y are integers on a 0-1000 grid (0,0 top-left, 1000,1000 bottom-right of the image) at the exact center of the requested element."
 
-    static func refine(point: CGPoint, label: String?, capture: CompanionScreenCapture) async -> CGPoint? {
+    static func refine(point: CGPoint, label: String?, capture: CompanionScreenCapture, cropWidth cropWidthPoints: CGFloat = 480, cropHeight cropHeightPoints: CGFloat = 270) async -> CGPoint? {
         guard let label = label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty,
               label.lowercased() != "none",
               let source = NSImage(data: capture.imageData)?.cgImage(forProposedRect: nil, context: nil, hints: nil),
@@ -2000,8 +2004,8 @@ enum LocalPointRefiner {
         let imageHeight = CGFloat(source.height)
         let scaleX = imageWidth / CGFloat(capture.screenshotWidthInPixels)
         let scaleY = imageHeight / CGFloat(capture.screenshotHeightInPixels)
-        let cropWidth = min(imageWidth, (480 * scaleX).rounded())
-        let cropHeight = min(imageHeight, (270 * scaleY).rounded())
+        let cropWidth = min(imageWidth, (cropWidthPoints * scaleX).rounded())
+        let cropHeight = min(imageHeight, (cropHeightPoints * scaleY).rounded())
         let originX = min(max((point.x * scaleX - cropWidth / 2).rounded(), 0), imageWidth - cropWidth)
         let originY = min(max((point.y * scaleY - cropHeight / 2).rounded(), 0), imageHeight - cropHeight)
         let cropRect = CGRect(x: originX, y: originY, width: cropWidth, height: cropHeight)

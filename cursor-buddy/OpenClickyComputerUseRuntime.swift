@@ -101,10 +101,14 @@ final class OpenClickyNativeComputerUseController: ObservableObject {
         try OpenClickyComputerUseKeyboardInput.typeCharacters(text, delayMilliseconds: delayMilliseconds, toPid: pid)
     }
 
-    func click(at point: CGPoint) throws {
+    func click(at point: CGPoint, count: Int = 1) throws {
         guard isEnabled else { throw OpenClickyComputerUseError.disabled }
         OpenClickyApplicationUsageLogStore.shared.recordFrontmostApplication(source: "native_cua_click")
-        try OpenClickyComputerUseMouseInput.leftClick(at: point)
+        if count >= 2 {
+            try OpenClickyComputerUseMouseInput.leftDoubleClick(at: point)
+        } else {
+            try OpenClickyComputerUseMouseInput.leftClick(at: point)
+        }
     }
 
     private static func makeStatus(
@@ -1108,6 +1112,19 @@ enum OpenClickyComputerUseMouseInput {
         try postMouseEvent(type: .leftMouseUp, at: quartzPoint)
     }
 
+    /// XAT: a real double click (second press carries click state 2), e.g. to open a file in Finder.
+    static func leftDoubleClick(at point: CGPoint) throws {
+        let clampedPoint = Self.clampToNearestScreen(point)
+        let quartzPoint = try Self.quartzPoint(fromAppKitPoint: clampedPoint)
+        try postMouseEvent(type: .mouseMoved, at: quartzPoint)
+        for state in [Int64(1), Int64(2)] {
+            try postMouseEvent(type: .leftMouseDown, at: quartzPoint, clickState: state)
+            usleep(35_000)
+            try postMouseEvent(type: .leftMouseUp, at: quartzPoint, clickState: state)
+            usleep(70_000)
+        }
+    }
+
     /// Clamp a point to the nearest screen's frame (used when a model-derived
     /// coordinate lands in a gap between displays or outside the desktop union).
     private static func clampToNearestScreen(_ point: CGPoint) -> CGPoint {
@@ -1149,7 +1166,7 @@ enum OpenClickyComputerUseMouseInput {
         )
     }
 
-    private static func postMouseEvent(type: CGEventType, at point: CGPoint) throws {
+    private static func postMouseEvent(type: CGEventType, at point: CGPoint, clickState: Int64 = 1) throws {
         guard let event = CGEvent(
             mouseEventSource: nil,
             mouseType: type,
@@ -1158,6 +1175,7 @@ enum OpenClickyComputerUseMouseInput {
         ) else {
             throw OpenClickyComputerUseError.eventCreationFailed("mouse \(type.rawValue) at \(Int(point.x)),\(Int(point.y))")
         }
+        event.setIntegerValueField(.mouseEventClickState, value: clickState)
         event.post(tap: .cghidEventTap)
     }
 }
