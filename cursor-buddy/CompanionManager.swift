@@ -6209,9 +6209,14 @@ final class CompanionManager: ObservableObject {
         }
 
         if let pending = pendingAmbiguousClick {
-            pendingAmbiguousClick = nil
-            if Date().timeIntervalSince(pending.at) <= 25,
+            // XAT: the pending choice is dropped when it expires, is answered, or the user starts a new click request;
+            // any other utterance leaves it in place for the rest of the 25 s window.
+            if Date().timeIntervalSince(pending.at) > 25 || Self.nativeClickRequest(from: transcript) != nil {
+                pendingAmbiguousClick = nil
+            }
+            if pendingAmbiguousClick != nil,
                let index = Self.ambiguousChoiceIndex(from: transcript, candidates: pending.candidates.map { $0.screenshot }) {
+                pendingAmbiguousClick = nil
                 OpenClickyMessageLogStore.shared.append(
                     lane: "computer-use",
                     direction: "incoming",
@@ -13148,8 +13153,18 @@ final class CompanionManager: ObservableObject {
     /// (screenshot coordinates, already in reading order). Only short utterances count, so ordinary requests are never hijacked.
     private static func ambiguousChoiceIndex(from transcript: String, candidates: [CGPoint]) -> Int? {
         let normalized = SpokenText.normalizedSpokenCommandText(transcript)
-        let words = normalized.split(separator: " ").map(String.init)
-        guard !words.isEmpty, words.count <= 5, !candidates.isEmpty else { return nil }
+        var words = normalized.split(separator: " ").map(String.init)
+        guard !words.isEmpty, words.count <= 7, !candidates.isEmpty else { return nil }
+        // "not the first one, the second": drop the negated choice and read what is left.
+        if let notIndex = words.firstIndex(where: { ["not", "no", "nope", "isn't", "wrong"].contains($0) }) {
+            let choiceWords: Set<String> = ["first", "1st", "second", "2nd", "third", "3rd", "fourth", "4th", "last", "top", "upper", "above", "bottom", "lower", "below", "left", "right", "one", "two", "three", "four", "1", "2", "3", "4"]
+            if let negatedIndex = words[notIndex...].firstIndex(where: { choiceWords.contains($0) }) {
+                words.removeSubrange(notIndex...negatedIndex)
+            } else {
+                words.removeSubrange(notIndex...)
+            }
+            if words.filter({ !["the", "one", "it", "that", "this", "i", "mean", "meant", "but", "other"].contains($0) }).isEmpty { return nil }
+        }
         let set = Set(words)
         // Named choices first, so "the second one" is never read as the bare numeral "one".
         let named: [(Set<String>, Int)] = [
@@ -13204,10 +13219,15 @@ final class CompanionManager: ObservableObject {
                 if target.lowercased().hasPrefix(prefix) { target = String(target.dropFirst(prefix.count)); break }
             }
             guard !target.isEmpty else { continue }
+            // "open a new document" / "open new file" is an app action, not a request to double-click something on screen.
+            if fixedCount == 2, !verbInSecondGroup,
+               target.range(of: #"(?i)^(?:an?|new)\s"#, options: .regularExpression) != nil { continue }
             var count = fixedCount
             if verbInSecondGroup, let verbRange = Range(match.range(at: 2), in: candidate) {
                 let verb = candidate[verbRange].lowercased()
-                count = (verb.contains("double") || verb == "open") ? 2 : 1
+                // "open" double-clicks only things that look like files, folders or icons; a button or link gets one click.
+                let opensLikeFile = target.range(of: #"(?i)\b(file|files|folder|document|icon|app|application)\b|\.[a-z0-9]{2,5}\b|\b(txt|pdf|png|jpg|jpeg|docx?|xlsx?|csv|zip|mp3|mp4|mov)\b"#, options: .regularExpression) != nil
+                count = (verb.contains("double") || (verb == "open" && opensLikeFile)) ? 2 : 1
             }
             return OpenClickyNativeClickRequest(
                 targetDescription: candidate,

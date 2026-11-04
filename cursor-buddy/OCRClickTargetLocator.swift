@@ -50,7 +50,12 @@ enum OCRClickTargetLocator {
     }
 
     static func resolve(phrase: String, capture: CompanionScreenCapture) -> Resolution {
-        let wanted = tokens(phrase).filter { !stopWords.contains($0) }
+        // Drop the pronoun "one" ("the blue one", "this one") before number words become digits, unless it numbers
+        // something ("version one", "chapter one"), so it does not demand a "1" on screen.
+        let pronounFree = phrase.replacingOccurrences(
+            of: #"(?i)(?<!\bversion)(?<!\bchapter)(?<!\bstep)(?<!\bpage)(?<!\bpart)(?<!\bnumber)(?<!\bitem)(?<!\boption)(?<!\bslide)(?<!\bday)(?<!\blevel)(?<!\bepisode)(?<!\bseason)(?<!\blesson)(?<!\bsection)(?<!\bfigure)(?<!\btrack)\s+one\s*$"#,
+            with: "", options: .regularExpression)
+        let wanted = tokens(pronounFree).filter { !stopWords.contains($0) }
         guard !wanted.isEmpty,
               let image = NSImage(data: capture.imageData)?.cgImage(forProposedRect: nil, context: nil, hints: nil),
               capture.screenshotWidthInPixels > 0, capture.screenshotHeightInPixels > 0 else { return .none }
