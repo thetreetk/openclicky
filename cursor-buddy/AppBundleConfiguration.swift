@@ -163,6 +163,27 @@ nonisolated enum AppBundleConfiguration {
         return trimmed
     }
 
+    /// Optional Hermes agent API (e.g. http://127.0.0.1:8642/v1). When set, Agent Mode sends its tasks to
+    /// Hermes (chat completions, bearer key OPENCLICKY_HERMES_KEY) instead of launching the bundled Codex runtime.
+    static func hermesAgentBaseURL() -> String? {
+        let configured = stringValue(
+            forKey: "HermesAgentBaseURL",
+            environmentKeys: ["OPENCLICKY_HERMES_URL"]
+        ) ?? localDevelopmentEnvironmentValue(forKey: "OPENCLICKY_HERMES_URL")
+        guard var trimmed = configured, !trimmed.isEmpty else { return nil }
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty else { return nil }
+        return trimmed
+    }
+
+    static func hermesAgentAPIKey() -> String? {
+        stringValue(forKey: "HermesAgentAPIKey", environmentKeys: ["OPENCLICKY_HERMES_KEY"])
+            ?? localDevelopmentEnvironmentValue(forKey: "OPENCLICKY_HERMES_KEY")
+    }
+
     static func localTTSVoice() -> String {
         stringValue(forKey: "LocalTTSVoice", environmentKeys: ["OPENCLICKY_LOCAL_TTS_VOICE"])
             ?? localDevelopmentEnvironmentValue(forKey: "OPENCLICKY_LOCAL_TTS_VOICE")

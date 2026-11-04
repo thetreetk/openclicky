@@ -640,7 +640,9 @@ final class CodexAgentSession: ObservableObject, Identifiable, BrowserWorkspaceA
             do {
                 let coordinationNote = try await self.buildAgentCoordinationNote(for: prompt)
                 try self.requireCurrentRun(generation)
-                let modelPrompt = self.promptForModel(
+                let modelPrompt = AppBundleConfiguration.hermesAgentBaseURL() != nil
+                    ? self.promptForHermes(prompt: prompt, screenContext: screenContext)
+                    : self.promptForModel(
                     prompt: prompt,
                     screenContext: screenContext,
                     coordinationNote: coordinationNote
@@ -708,6 +710,10 @@ final class CodexAgentSession: ObservableObject, Identifiable, BrowserWorkspaceA
     }
 
     private func runPrompt(_ prompt: String, generation: UInt64, didRetryCompatibilityFallback: Bool = false) async {
+        if AppBundleConfiguration.hermesAgentBaseURL() != nil {
+            await runHermesTurn(prompt: prompt, generation: generation)
+            return
+        }
         do {
             try requireCurrentRun(generation)
             try await ensureThread(for: generation)
@@ -767,6 +773,92 @@ final class CodexAgentSession: ObservableObject, Identifiable, BrowserWorkspaceA
                 return
             }
 
+            lastErrorMessage = text
+            status = .failed(text)
+            progressStage = .failed
+            entries.append(CodexTranscriptEntry(role: .system, text: text))
+        }
+    }
+
+    /// Lean brief for Hermes: it has its own tools, memory and skills, so none of the Codex runtime paths apply.
+    private func promptForHermes(prompt: String, screenContext: CodexAgentScreenContext?) -> String {
+        let brief = """
+        OpenClicky Agent Mode task. You are the user's Mac agent; act with your tools (computer control, files, shell, server skills) and finish the job.
+        - User request: \(prompt)
+        - Voice is the main interface: the final answer is spoken aloud, so make it one or two plain sentences with no markdown, bullets or code.
+        - Proceed without asking unless something is destructive or truly ambiguous. Verify the result before saying it worked.
+        - If you found a file the user asked for, include its exact path in the answer.
+        - You must actually use your tools to do the task or to look up the facts; never answer from memory or guess, and never claim success you did not verify.
+        - The spoken sentences must contain the real result (the number, the status, the name), not a description of what you did.
+        - When the work is finished, end the reply with exactly these lines after the spoken sentences (no bullets before them):
+        <NEXT_ACTIONS>
+        - <a follow-up the user could ask next, under 40 characters>
+        </NEXT_ACTIONS>
+        TASK_TITLE: <2-5 word title>
+        """
+        guard let context = screenContext, !context.isEmpty else { return brief }
+        return "\(context.promptPrefix())\n\n\(brief)"
+    }
+
+    /// Agent Mode on Hermes: one chat-completions call per turn, replayed through the same transcript,
+    /// response-card and completion handling that Codex notifications use.
+    private func runHermesTurn(prompt: String, generation: UInt64) async {
+        guard let base = AppBundleConfiguration.hermesAgentBaseURL(),
+              let url = URL(string: base + "/chat/completions") else { return }
+        do {
+            try requireCurrentRun(generation)
+            stopReason = nil
+            status = .running
+            progressStage = .executing
+            lastErrorMessage = nil
+            appendActivityStatusLine("Working on it")
+
+            // Earlier turns of this session (user and assistant text) give follow-ups their context;
+            // the newest user turn is replaced by the full brief.
+            var messages: [[String: String]] = []
+            for entry in entries.dropLast() {
+                switch entry.role {
+                case .user: messages.append(["role": "user", "content": entry.text])
+                case .assistant: messages.append(["role": "assistant", "content": entry.text])
+                default: break
+                }
+            }
+            messages.append(["role": "user", "content": prompt])
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 900
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let key = AppBundleConfiguration.hermesAgentAPIKey(), !key.isEmpty {
+                request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model": "hermes-agent",
+                "messages": messages,
+                "stream": false
+            ])
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try requireCurrentRun(generation)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                throw CodexRPCError(message: "Hermes returned an error. \(body.prefix(200))")
+            }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choice = (json["choices"] as? [[String: Any]])?.first,
+                  let message = choice["message"] as? [String: Any],
+                  let text = message["content"] as? String, !text.isEmpty else {
+                throw CodexRPCError(message: "Hermes sent an empty reply.")
+            }
+
+            progressStage = .composing
+            handleCompletedItem(["type": "agentMessage", "id": UUID().uuidString, "text": text])
+            handleNotification(["method": "turn/completed", "params": [String: Any]()])
+        } catch is CancellationError {
+            return
+        } catch {
+            guard isCurrentRun(generation) else { return }
+            let text = Self.userFacingErrorMessage(from: error.localizedDescription)
             lastErrorMessage = text
             status = .failed(text)
             progressStage = .failed
