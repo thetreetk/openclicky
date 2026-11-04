@@ -1526,6 +1526,8 @@ final class CompanionManager: ObservableObject {
     private var pendingRelaunchableAgentResumeTask: Task<Void, Never>?
     private var relaunchableAgentResumeTimer: Timer?
     private var autoResumedRelaunchSessionIDs: Set<UUID> = []
+    /// XAT: matches from an ambiguous click request ("Add to cart" x2), waiting for "the first one" / "the left one" ...
+    private var pendingAmbiguousClick: (candidates: [(screenshot: CGPoint, global: CGPoint)], displayFrame: CGRect, request: OpenClickyNativeClickRequest, at: Date)?
     var tutorIdleCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
@@ -3746,11 +3748,25 @@ final class CompanionManager: ObservableObject {
 
     private func resumeRestoredAgentTasksIfNeeded(trigger: String) {
         pendingRelaunchableAgentResumeTask = nil
-        let sessionsToResume = codexAgentSessions.filter { session in
+        // XAT: only tasks that were active recently are resumed automatically; an older interrupted task is left for the
+        // user to resume by hand (an auto-resumed task that cannot finish used to hang the app on every launch).
+        let resumeWindow: TimeInterval = 20 * 60
+        let candidatesToResume = codexAgentSessions.filter { session in
             session.canResumeAfterRelaunch
                 && !archivedSessionIDs.contains(session.id)
                 && !autoResumedRelaunchSessionIDs.contains(session.id)
         }
+        let staleSessions = candidatesToResume.filter { Date().timeIntervalSince($0.latestActivityDate) > resumeWindow }
+        if !staleSessions.isEmpty {
+            autoResumedRelaunchSessionIDs.formUnion(staleSessions.map(\.id))
+            OpenClickyMessageLogStore.shared.append(
+                lane: "agent",
+                direction: "internal",
+                event: "openclicky.agent_task.auto_resume_skipped_stale",
+                fields: ["trigger": trigger, "count": staleSessions.count, "titles": staleSessions.map(\.title)]
+            )
+        }
+        let sessionsToResume = candidatesToResume.filter { Date().timeIntervalSince($0.latestActivityDate) <= resumeWindow }
         guard !sessionsToResume.isEmpty else { return }
 
         let ids = sessionsToResume.map(\.id)
@@ -6192,6 +6208,28 @@ final class CompanionManager: ObservableObject {
             return true
         }
 
+        if let pending = pendingAmbiguousClick {
+            pendingAmbiguousClick = nil
+            if Date().timeIntervalSince(pending.at) <= 25,
+               let index = Self.ambiguousChoiceIndex(from: transcript, candidates: pending.candidates.map { $0.screenshot }) {
+                OpenClickyMessageLogStore.shared.append(
+                    lane: "computer-use",
+                    direction: "incoming",
+                    event: "native_cua.click_clarified",
+                    fields: ["executor": "native_cua", "choice": index, "transcript": transcript]
+                )
+                performNativeClick(
+                    at: pending.candidates[index].global,
+                    displayFrame: pending.displayFrame,
+                    label: pending.request.targetPhrase,
+                    request: pending.request,
+                    executionStartedAt: Date(),
+                    timing: activeRequestTiming
+                )
+                return true
+            }
+        }
+
         if let clickRequest = Self.nativeClickRequest(from: transcript) {
             OpenClickyMessageLogStore.shared.append(
                 lane: "computer-use",
@@ -7785,6 +7823,30 @@ final class CompanionManager: ObservableObject {
 
                 // XAT: read the screen's text first. A unique text match (file name, button label, link) is exact and
                 // fast; the vision model is only used when the text is absent or ambiguous.
+                if let phrase = request.targetPhrase,
+                   case .ambiguous(let textMatches) = OCRClickTargetLocator.resolve(phrase: phrase, capture: targetScreenCapture) {
+                    pendingAmbiguousClick = (
+                        candidates: textMatches.map { ($0.point, globalPoint(fromScreenshotPoint: $0.point, in: targetScreenCapture)) },
+                        displayFrame: targetScreenCapture.displayFrame,
+                        request: request,
+                        at: Date()
+                    )
+                    OpenClickyMessageLogStore.shared.append(
+                        lane: "computer-use",
+                        direction: "incoming",
+                        event: "native_cua.click_needs_clarification",
+                        fields: ["executor": "native_cua", "targetPhrase": phrase, "matches": textMatches.count]
+                    )
+                    speakShortSystemResponse("there are \(textMatches.count) of those. which one: the first, the second, the left one or the right one?")
+                    markRequestCompleted(
+                        route: "native_cua.click",
+                        executionStartedAt: executionStartedAt,
+                        timing: timing,
+                        status: "needs_clarification",
+                        extra: ["executor": "native_cua", "targetPhrase": phrase, "matches": textMatches.count]
+                    )
+                    return
+                }
                 if let phrase = request.targetPhrase,
                    let textMatch = OCRClickTargetLocator.locate(phrase: phrase, capture: targetScreenCapture) {
                     OpenClickyMessageLogStore.shared.append(
@@ -13079,6 +13141,33 @@ final class CompanionManager: ObservableObject {
             )
         }
 
+        return nil
+    }
+
+    /// XAT: "the first one", "second", "the left one", "bottom one", "last" ... pick among ambiguous click candidates
+    /// (screenshot coordinates, already in reading order). Only short utterances count, so ordinary requests are never hijacked.
+    private static func ambiguousChoiceIndex(from transcript: String, candidates: [CGPoint]) -> Int? {
+        let normalized = SpokenText.normalizedSpokenCommandText(transcript)
+        let words = normalized.split(separator: " ").map(String.init)
+        guard !words.isEmpty, words.count <= 5, !candidates.isEmpty else { return nil }
+        let set = Set(words)
+        // Named choices first, so "the second one" is never read as the bare numeral "one".
+        let named: [(Set<String>, Int)] = [
+            (["first", "1st"], 0), (["second", "2nd"], 1), (["third", "3rd"], 2), (["fourth", "4th"], 3)
+        ]
+        for (names, index) in named where !names.isDisjoint(with: set) {
+            return index < candidates.count ? index : nil
+        }
+        if set.contains("last") { return candidates.count - 1 }
+        if !set.isDisjoint(with: ["top", "upper", "above"]) { return candidates.indices.min(by: { candidates[$0].y < candidates[$1].y }) }
+        if !set.isDisjoint(with: ["bottom", "lower", "below"]) { return candidates.indices.max(by: { candidates[$0].y < candidates[$1].y }) }
+        if set.contains("left") { return candidates.indices.min(by: { candidates[$0].x < candidates[$1].x }) }
+        if set.contains("right") { return candidates.indices.max(by: { candidates[$0].x < candidates[$1].x }) }
+        // Bare numerals only as the whole answer ("two", "number two", "option 2").
+        let numerals: [String: Int] = ["one": 0, "1": 0, "two": 1, "2": 1, "three": 2, "3": 2, "four": 3, "4": 3]
+        let fillers: Set<String> = ["the", "number", "option", "choice", "pick", "choose", "select", "click"]
+        let rest = words.filter { !fillers.contains($0) }
+        if rest.count == 1, let index = numerals[rest[0]] { return index < candidates.count ? index : nil }
         return nil
     }
 

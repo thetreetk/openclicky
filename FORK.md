@@ -11,7 +11,7 @@ and optionally a local agent (Hermes) for Agent Mode. It keeps the upstream beha
 | Branch | Contents |
 |---|---|
 | `main` | mirror of upstream `main` |
-| `hermes-backend` (default) | upstream + six commits + `FORK.md` + `xat/` |
+| `hermes-backend` (default) | upstream + seven commits + `FORK.md` + `xat/` |
 
 Base commit: `e9eb06a`. Sync: `git fetch upstream && git rebase upstream/main` on `hermes-backend`. The larger files touched are `CompanionManager.swift`, `CompanionManager+AIResponsePipeline.swift` and `CodexAgentSession.swift`, which upstream edits often, so expect to resolve conflicts by hand and re-run the tests.
 
@@ -24,6 +24,7 @@ Base commit: `e9eb06a`. Sync: `git fetch upstream && git rebase upstream/main` o
 | 4 | pointing requests stay on the voice path | "find / locate / show me / where is ... the button / menu / icon / tab / field" is answered by the fast voice + pointer path instead of Agent Mode (which cannot point) |
 | 5 | Agent Mode on Hermes | `OPENCLICKY_HERMES_URL` / `OPENCLICKY_HERMES_KEY` send agent tasks to a Hermes chat-completions API; no Codex runtime needed |
 | 6 | reliable clicking on the local model | targets that are visible text (file names, labels, links) are found by reading the screen with Vision OCR; the model is only the fallback and gets the same grid conversion and a two-stage zoom; "double click X", "find X and double click it", "open the file called X" are real clicks; direct clicks never become agent tasks |
+| 7 | ask which one; bounded auto-resume | when several on-screen lines match a click request equally (two identical "Add to cart" buttons) it says so and waits for "the first / second / left / right / top / bottom one" (25 s window) instead of guessing; interrupted agent tasks idle for more than 20 minutes are no longer resumed automatically on launch |
 
 ## Configure
 Copy `xat/secrets.env.example` to `~/.config/openclicky/secrets.env` (mode 600). Typical local stack: Ollama with `qwen3-vl:30b-a3b-instruct` on `:11434` (keep it loaded; a cold reload costs 10-30 s),
@@ -43,10 +44,11 @@ Offline scripts use the app's real prompt (`oc_prompt2.txt`) against a screensho
 | Same requests by real voice | routed to the voice path, pointer and box produced in ~0.5 s once the model is warm |
 | Website clicks (buttons, links, 18 px close icon, banner buttons, "Add to cart for the Socket Set") | all landed on the right element |
 | File find and double click (7 similarly named files, incl. `report_final` vs `report_final_v2`) | 7/7 opened the right file |
+| Ambiguous click ("Add to cart" x2) then "the second / left / right / first one" | 5/5 clicked the right button (one miss right after a relaunch was a push-to-talk warm-up, not the logic) |
 | Finder rows at 20 px pitch, model only: first guess / one zoom / two zooms | 15/21 / 19/21 / 21/21 (OCR makes this moot for named files) |
 
 ## Known limits
-- Ambiguous requests ("Add to cart" with two identical buttons) click one without asking.
+- Ambiguity is detected only when the matching text is readable on screen; for icon-only buttons the model still picks one.
 - No scrolling: a target below the fold is reported as not found.
 - A vision model can still invent labels on dense screens; text-first targeting avoids that for anything with readable text.
 - Agent tasks that cannot finish are auto-resumed on every launch; stop stray ones (restart the agent backend) before testing voice.

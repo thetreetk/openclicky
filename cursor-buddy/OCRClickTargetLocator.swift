@@ -37,23 +37,34 @@ enum OCRClickTargetLocator {
         return result
     }
 
+    enum Resolution {
+        case none
+        case unique(Match)
+        /// Several lines match equally well (e.g. two identical "Add to cart" buttons), in reading order (top to bottom, then left to right).
+        case ambiguous([Match])
+    }
+
     static func locate(phrase: String, capture: CompanionScreenCapture) -> Match? {
+        if case .unique(let match) = resolve(phrase: phrase, capture: capture) { return match }
+        return nil
+    }
+
+    static func resolve(phrase: String, capture: CompanionScreenCapture) -> Resolution {
         let wanted = tokens(phrase).filter { !stopWords.contains($0) }
         guard !wanted.isEmpty,
               let image = NSImage(data: capture.imageData)?.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              capture.screenshotWidthInPixels > 0, capture.screenshotHeightInPixels > 0 else { return nil }
+              capture.screenshotWidthInPixels > 0, capture.screenshotHeightInPixels > 0 else { return .none }
 
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
         guard (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])) != nil,
-              let observations = request.results else { return nil }
+              let observations = request.results else { return .none }
 
         let scaleX = CGFloat(capture.screenshotWidthInPixels) / CGFloat(image.width)
         let scaleY = CGFloat(capture.screenshotHeightInPixels) / CGFloat(image.height)
 
-        var best: (score: Double, point: CGPoint, text: String)?
-        var bestCount = 0
+        var scored: [(score: Double, match: Match)] = []
         for observation in observations {
             guard let candidate = observation.topCandidates(1).first else { continue }
             let have = tokens(candidate.string)
@@ -61,20 +72,18 @@ enum OCRClickTargetLocator {
             guard wanted.allSatisfy({ haveSet.contains($0) }) else { continue }
             // Prefer the line with the fewest extra words, so "report final" picks report_final.txt over report_final_v2.txt.
             let extras = have.filter { !wanted.contains($0) && !extensionTokens.contains($0) && !stopWords.contains($0) }.count
-            let score = 1.0 / Double(1 + extras)
             let box = observation.boundingBox
             let point = CGPoint(
                 x: box.midX * CGFloat(image.width) * scaleX,
                 y: (1 - box.midY) * CGFloat(image.height) * scaleY
             )
-            if let current = best {
-                if score > current.score + 0.0001 { best = (score, point, candidate.string); bestCount = 1 }
-                else if abs(score - current.score) <= 0.0001 { bestCount += 1 }
-            } else {
-                best = (score, point, candidate.string); bestCount = 1
-            }
+            scored.append((1.0 / Double(1 + extras), Match(point: point, text: candidate.string, candidateCount: 1)))
         }
-        guard let best, bestCount == 1 else { return nil }
-        return Match(point: best.point, text: best.text, candidateCount: bestCount)
+        guard let topScore = scored.map({ $0.score }).max() else { return .none }
+        var tied = scored.filter { abs($0.score - topScore) <= 0.0001 }.map { $0.match }
+        if tied.count == 1 { return .unique(tied[0]) }
+        // Reading order: rows first (points within 12 px count as one row), then left to right.
+        tied.sort { abs($0.point.y - $1.point.y) > 12 ? $0.point.y < $1.point.y : $0.point.x < $1.point.x }
+        return .ambiguous(tied)
     }
 }
