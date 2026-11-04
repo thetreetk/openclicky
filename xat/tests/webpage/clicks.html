@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><title>READY</title>
+<style>
+*{box-sizing:border-box;font-family:-apple-system,Helvetica,Arial,sans-serif}
+body{margin:0;background:#f4f6f8;color:#1b1f24}
+header{display:flex;align-items:center;gap:26px;padding:18px 48px;background:#fff;border-bottom:1px solid #dde3ea}
+.logo{font-weight:700;font-size:22px;margin-right:auto}header a{color:#2a4bd7;font-size:15px;text-decoration:underline;cursor:pointer}
+.btn{border:0;color:#fff;font-size:16px;font-weight:600;border-radius:8px;padding:0 22px;height:44px;cursor:pointer}
+#login{background:#6d28d9}#signup{background:#0b5fff}
+main{padding:36px 48px}.row{display:flex;gap:24px;margin-bottom:28px}
+.card{background:#fff;border:1px solid #dde3ea;border-radius:12px;padding:20px;width:290px}
+#cart1,#cart2{background:#e11d48;width:100%}#subscribe{background:#12a150}
+#status{font-size:18px;margin:10px 0 26px}
+.spacer{height:1100px}
+#support{background:#0e7490;margin:0 0 80px}
+#cookie{position:fixed;left:0;right:0;bottom:0;background:#1f2937;color:#fff;padding:16px 48px;display:flex;align-items:center;gap:16px}
+#cookie .t{margin-right:auto}#accept{background:#f59e0b;color:#111}#reject{background:#374151}
+#closebanner{position:absolute;right:14px;top:6px;width:18px;height:18px;border:0;background:#ef4444;color:#fff;font-size:11px;border-radius:3px;line-height:18px;padding:0;cursor:pointer}
+</style></head><body>
+<header><div class="logo">Acme Store</div><a id="pricing" href="#">Pricing</a><a id="docs" href="#">Docs</a><button class="btn" id="login">Log in</button><button class="btn" id="signup">Sign up</button></header>
+<main><div id="status">Click something.</div>
+<div class="row"><div class="card"><h3>Cordless Drill</h3><p>$89.00</p><button class="btn" id="cart1">Add to cart</button></div>
+<div class="card"><h3>Socket Set</h3><p>$46.50</p><button class="btn" id="cart2">Add to cart</button></div>
+<div class="card"><h3>Newsletter</h3><p>Weekly deals</p><button class="btn" id="subscribe">Subscribe</button></div></div>
+<div class="spacer"></div><button class="btn" id="support">Contact support</button></main>
+<div id="cookie"><span class="t">We use cookies to improve your experience.</span><button class="btn" id="reject">Reject</button><button class="btn" id="accept">Accept all</button><button id="closebanner">x</button></div>
+<script>for(const el of document.querySelectorAll('button,a')){el.addEventListener('click',e=>{e.preventDefault();document.title='CLICKED:'+el.id;document.getElementById('status').textContent='Clicked '+el.id});el.addEventListener('pointerdown',()=>{if(!document.title.startsWith('CLICKED'))document.title='DOWN:'+el.id})}
+document.addEventListener('pointerdown',e=>{window.__last=e.clientX+','+e.clientY})</script>
+</body></html>

@@ -1,0 +1,28 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Acme Store</title>
+<style>
+*{box-sizing:border-box;font-family:-apple-system,Helvetica,Arial,sans-serif}
+body{margin:0;background:#f4f6f8;color:#1b1f24}
+header{display:flex;align-items:center;gap:28px;padding:18px 48px;background:#fff;border-bottom:1px solid #dde3ea}
+.logo{font-weight:700;font-size:22px;margin-right:auto}
+header a{color:#445;text-decoration:none;font-size:15px}
+.btn{border:0;color:#fff;font-size:16px;font-weight:600;border-radius:8px;padding:0 22px;height:44px}
+#signup{background:#0b5fff}#login{background:#6d28d9}
+.hero{padding:56px 48px;display:flex;gap:40px;align-items:center}
+.hero h1{font-size:44px;margin:0 0 12px}.hero p{font-size:18px;color:#556;margin:0 0 24px;max-width:560px}
+#search{width:520px;height:48px;font-size:17px;padding:0 16px;border:3px solid #ff6a00;border-radius:10px;background:#fff}
+.cards{display:flex;gap:28px;padding:0 48px 36px}
+.card{background:#fff;border:1px solid #dde3ea;border-radius:12px;padding:22px;width:300px}
+.card h3{margin:0 0 6px}.card .price{color:#667;margin-bottom:16px}
+#cart1{background:#e11d48;width:100%}#cart2{background:#0e9aa7;width:100%}
+footer{margin-top:12px;padding:30px 48px;background:#fff;border-top:1px solid #dde3ea;display:flex;gap:16px;align-items:center}
+footer input{width:340px;height:44px;border:1px solid #bbc;border-radius:8px;padding:0 14px;font-size:16px}
+#subscribe{background:#12a150}
+</style></head><body>
+<header><div class="logo">Acme Store</div><a href="#">Products</a><a href="#">Pricing</a><a href="#">Support</a>
+<button class="btn" id="login">Log in</button><button class="btn" id="signup">Sign up</button></header>
+<section class="hero"><div><h1>Everything for your workshop</h1><p>Tools, parts and supplies shipped the same day. Find what you need below.</p>
+<input id="search" placeholder="Search products"></div></section>
+<section class="cards"><div class="card"><h3>Cordless Drill</h3><div class="price">$89.00</div><button class="btn" id="cart1">Add to cart</button></div>
+<div class="card"><h3>Socket Set</h3><div class="price">$46.50</div><button class="btn" id="cart2">Add to cart</button></div></section>
+<footer><strong>Newsletter</strong><input placeholder="you@example.com"><button class="btn" id="subscribe">Subscribe</button></footer>
+</body></html>
