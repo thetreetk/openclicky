@@ -12599,6 +12599,14 @@ final class CompanionManager: ObservableObject {
         let normalized = SpokenText.normalizedSpokenCommandText(transcript)
         guard !normalized.isEmpty else { return false }
 
+        // XAT: pointing requests ("find the button that shares this", "where is the save icon", "show me the menu for ...")
+        // are answered by the fast voice + pointer path, never handed to Agent Mode, unless the user says agent/background/later.
+        let pointingRequestPattern = #"\b(?:find|locate|spot|show\s+me|point\s+(?:at|to|out)|highlight|where(?:'?s|\s+is|\s+are)|which\s+one\s+is)\b.{0,50}\b(?:button|buttons|link|links|icon|icons|menu|menus|tab|tabs|field|fields|toggle|checkbox|switch|option|options|setting|settings|control|controls|slider|input|dropdown|bar|widget|item)\b"#
+        if normalized.range(of: pointingRequestPattern, options: .regularExpression) != nil,
+           normalized.range(of: #"\b(?:agent|background|later|keep working|overnight)\b"#, options: .regularExpression) == nil {
+            return true
+        }
+
         let visualReferencePatterns = [
             #"\b(?:look at|take a look at|have a look at|check|inspect|review|summari[sz]e|describe)\s+(?:this|that|it|here|my screen|the screen|what'?s on screen|the current screen|the visible screen|the current page|this page|that page|this tab|that tab|the browser|this window|that window)\b"#,
             #"\b(?:what do you think|what'?s this|what is this|what'?s that|what is that|can you see|do you see|are you seeing)\b"#
@@ -12647,6 +12655,7 @@ final class CompanionManager: ObservableObject {
         partialTranscript: String,
         finalTranscript: String
     ) -> String? {
+        guard !isInstantVoiceScreenContextRequest(finalTranscript) else { return nil }  // XAT: pointing requests stay on the voice path
         guard isAgentRoutingCandidate(partialTranscript) else { return nil }
 
         let normalizedFinal = SpokenText.normalizedSpokenCommandText(finalTranscript)
