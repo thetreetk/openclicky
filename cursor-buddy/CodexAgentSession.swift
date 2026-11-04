@@ -245,7 +245,7 @@ final class CodexAgentSession: ObservableObject, Identifiable, BrowserWorkspaceA
     @Published private(set) var activityStatusLines: [String] = []
     @Published private(set) var queuedFollowUpPrompts: [String] = []
     @Published private(set) var wasRestoredAfterRelaunch = false
-    @Published var model: String = OpenClickyModelCatalog.codexActionsModel(
+    @Published var model: String = AppBundleConfiguration.openAIModelOverride() ?? OpenClickyModelCatalog.codexActionsModel(
         withID: UserDefaults.standard.string(forKey: "clickyCodexModel") ?? OpenClickyModelCatalog.defaultCodexActionsModelID
     ).id
     /// Optional specialist-agent system context (soul/instructions/memory)

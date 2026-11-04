@@ -21,7 +21,7 @@ final class CodexPointDetector {
         fileManager: FileManager = .default,
         homeManager: CodexHomeManager = CodexHomeManager()
     ) {
-        self.model = model
+        self.model = AppBundleConfiguration.openAIModelOverride() ?? model
         self.fileManager = fileManager
         self.homeManager = homeManager
     }

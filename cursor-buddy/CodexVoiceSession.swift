@@ -42,7 +42,7 @@ final class CodexVoiceSession {
         fileManager: FileManager = .default,
         workingDirectory: URL? = nil
     ) {
-        self.model = model
+        self.model = AppBundleConfiguration.openAIModelOverride() ?? model
         self.homeManager = homeManager
         self.processManager = processManager ?? CodexProcessManager()
         self.fileManager = fileManager

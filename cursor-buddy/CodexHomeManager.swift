@@ -44,7 +44,7 @@ final class CodexHomeManager {
         self.fileManager = fileManager
         self.applicationSupportDirectory = applicationSupportDirectory ?? CodexHomeManager.defaultApplicationSupportDirectory(fileManager: fileManager)
         self.workerBaseURL = workerBaseURL
-        self.model = model
+        self.model = AppBundleConfiguration.openAIModelOverride() ?? model
         self.reasoningEffort = reasoningEffort
     }
 

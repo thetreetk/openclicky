@@ -29,7 +29,7 @@ struct ClickyCodexConfigTemplate: Equatable {
         cuaDriverMCPCommand: String? = nil,
         preferAPIKeyAuthForDefaultOpenAI: Bool = false
     ) {
-        self.model = model
+        self.model = AppBundleConfiguration.openAIModelOverride() ?? model
         self.reasoningEffort = reasoningEffort
         self.workerBaseURL = workerBaseURL
         self.modelInstructionsFileName = modelInstructionsFileName
