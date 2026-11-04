@@ -188,6 +188,12 @@ final class OpenClickyNotchCaptureWindowManager {
         // from the primary external monitor.
         pinAnchorScreenToActiveInteractionIfNeeded()
         let primaryScreen = preferredAnchorScreen()
+        if Self.suppressesIsland(on: primaryScreen) {
+            panel?.orderOut(nil)
+            hideDynamicNotchKitStatusSurface()
+            stopCollapsedHoverProbe()
+            return
+        }
         let collapsedWidth = Self.collapsedPanelWidth(for: primaryScreen, appName: foregroundAppName)
         ensureCaptureContentView(width: collapsedWidth, height: Self.collapsedPanelHeight)
         let accentColor = Self.nsAccentColor(for: accentTheme)
@@ -647,6 +653,7 @@ final class OpenClickyNotchCaptureWindowManager {
     private func showPanel(activating: Bool, width: CGFloat, height: CGFloat) {
         resizeAndReposition(width: width, height: height)
         panel?.level = OpenClickyWindowLevels.statusSurface
+        panel?.ignoresMouseEvents = !activating && Self.suppressesIsland(on: preferredAnchorScreen() ?? panel?.screen)
         if activating {
             NSApp.activate(ignoringOtherApps: true)
             panel?.makeKeyAndOrderFront(nil)
@@ -658,6 +665,11 @@ final class OpenClickyNotchCaptureWindowManager {
 
     private func showFallbackStatusPanel(width: CGFloat, height: CGFloat) {
         hideDynamicNotchKitStatusSurface()
+        // XAT: no pill (idle or voice) on a display without a notch (see suppressesIsland): it sits over the browser tab strip.
+        if Self.suppressesIsland(on: preferredAnchorScreen()) {
+            panel?.orderOut(nil)
+            return
+        }
         showPanel(activating: false, width: width, height: height)
     }
 
@@ -1244,7 +1256,8 @@ final class OpenClickyNotchCaptureWindowManager {
         }
         refreshFallbackStatusPanelOrderingIfNeeded()
         let mouseLocation = NSEvent.mouseLocation
-        guard let hoveredScreen = NSScreen.screens.first(where: { Self.notchHoverRegion(on: $0).contains(mouseLocation) }) else { return }
+        guard let hoveredScreen = NSScreen.screens.first(where: { Self.notchHoverRegion(on: $0).contains(mouseLocation) }),
+              !Self.suppressesIsland(on: hoveredScreen) else { return }
 
         if anchorScreenOverride?.displayID != hoveredScreen.displayID {
             anchorScreenOverride = hoveredScreen
@@ -1564,6 +1577,14 @@ final class OpenClickyNotchCaptureWindowManager {
 
         let gap = rightArea.minX - leftArea.maxX
         return gap > 0 ? gap : nil
+    }
+
+    /// XAT: on a display without a physical notch the "island" is a floating pill over the top-centre of the screen, which
+    /// covers browser tab strips and opens an input surface on hover. It is off there unless the user opts in:
+    /// `defaults write com.xat.openclicky openClickyShowIslandOnNotchlessDisplays -bool true`.
+    fileprivate static func suppressesIsland(on screen: NSScreen?) -> Bool {
+        guard let screen = screen ?? NSScreen.main ?? NSScreen.screens.first else { return false }
+        return !hasPhysicalNotch(on: screen) && !UserDefaults.standard.bool(forKey: "openClickyShowIslandOnNotchlessDisplays")
     }
 
     fileprivate static func hasPhysicalNotch(on screen: NSScreen) -> Bool {
